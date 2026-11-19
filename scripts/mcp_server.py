@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 
+from ._auth_file import ReloadingKeyFile
 from .mcp_queries import QueryError, ReadOnlyQueries
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ def _unique_pairs(pairs):
 
 
 def load_keys(path: Path) -> dict[str, str]:
-    """Load on every request so atomic file updates revoke keys immediately."""
+    """Read and validate a complete on-disk authorization snapshot."""
     try:
         flags = (
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -59,7 +60,6 @@ def load_keys(path: Path) -> dict[str, str]:
         mapping = json.loads(raw, object_pairs_hook=_unique_pairs)
         if not isinstance(mapping, dict) or not mapping or len(mapping) > 10000:
             raise ValueError
-        users = set()
         for key, user in mapping.items():
             if (
                 not isinstance(key, str)
@@ -73,10 +73,8 @@ def load_keys(path: Path) -> dict[str, str]:
                 or not user.strip()
                 or len(user) > 100
                 or any(ord(c) < 32 for c in user)
-                or user in users
             ):
                 raise ValueError
-            users.add(user)
         return mapping
     except (OSError, ValueError, TypeError, RecursionError):
         raise ValueError("Invalid MCP key file") from None
@@ -121,8 +119,8 @@ class BearerMiddleware:
                 {"Retry-After": str(max(1, int(until - now)))},
             )
         try:
-            keys = load_keys(self.key_file)
-        except ValueError:
+            keys = self.key_file.read()
+        except (OSError, RuntimeError, ValueError):
             return await error("AUTH_CONFIGURATION_UNAVAILABLE", 503)
         headers = [
             v for k, v in scope.get("headers", []) if k.lower() == b"authorization"
@@ -171,8 +169,8 @@ class BearerMiddleware:
 
 
 def create_app(queries, key_file, *, allowed_hosts=None, allowed_origins=None):
-    key_file = Path(key_file)
-    load_keys(key_file)
+    key_file = ReloadingKeyFile(Path(key_file), load_keys)
+    key_file.read()
     server = FastMCP(
         "dailyinfo-readonly",
         stateless_http=True,

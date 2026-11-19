@@ -42,11 +42,15 @@ def test_keys_fail_closed_on_invalid_permissions_and_format(tmp_path):
         "{}",
         '{"short":"reader"}',
         '{"duplicate":"a","duplicate":"b"}',
-        json.dumps({KEY_A: "same", KEY_B: "same"}),
     ):
         path.write_text(content)
         with pytest.raises(ValueError):
             load_keys(path)
+
+
+def test_keys_allow_rotation_with_one_username(tmp_path):
+    path = keys_file(tmp_path, {KEY_A: "same", KEY_B: "same"})
+    assert load_keys(path) == {KEY_A: "same", KEY_B: "same"}
 
 
 @pytest.mark.parametrize("with_content", [False, True])
